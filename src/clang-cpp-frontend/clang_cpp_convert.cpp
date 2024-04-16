@@ -24,6 +24,7 @@ CC_DIAGNOSTIC_POP()
 #include <fmt/core.h>
 #include <clang-c-frontend/typecast.h>
 #include <util/c_types.h>
+#include <boost/multiprecision/detail/number_base.hpp>
 
 clang_cpp_convertert::clang_cpp_convertert(
   contextt &_context,
@@ -55,7 +56,7 @@ bool clang_cpp_convertert::get_decl(const clang::Decl &decl, exprt &new_expr)
     const clang::CXXRecordDecl &cxxrd =
       static_cast<const clang::CXXRecordDecl &>(decl);
 
-    if (get_struct_union_class(cxxrd))
+    if (get_struct_union_class(cxxrd, true))
       return true;
 
     break;
@@ -113,7 +114,7 @@ bool clang_cpp_convertert::get_decl(const clang::Decl &decl, exprt &new_expr)
     const clang::ClassTemplateSpecializationDecl &cd =
       static_cast<const clang::ClassTemplateSpecializationDecl &>(decl);
 
-    if (get_struct_union_class(cd))
+    if (get_struct_union_class(cd, true))
       return true;
     break;
   }
@@ -213,14 +214,16 @@ void clang_cpp_convertert::get_decl_name(
 }
 bool clang_cpp_convertert::get_type(
   const clang::QualType &q_type,
-  typet &new_type)
+  typet &new_type,
+  bool complete)
 {
-  return clang_c_convertert::get_type(q_type, new_type);
+  return clang_c_convertert::get_type(q_type, new_type, complete);
 }
 
 bool clang_cpp_convertert::get_type(
   const clang::Type &the_type,
-  typet &new_type)
+  typet &new_type,
+  bool complete)
 {
   switch (the_type.getTypeClass())
   {
@@ -229,7 +232,7 @@ bool clang_cpp_convertert::get_type(
     const clang::SubstTemplateTypeParmType &substmpltt =
       static_cast<const clang::SubstTemplateTypeParmType &>(the_type);
 
-    if (get_type(substmpltt.getReplacementType(), new_type))
+    if (get_type(substmpltt.getReplacementType(), new_type, complete))
       return true;
     break;
   }
@@ -239,7 +242,7 @@ bool clang_cpp_convertert::get_type(
     const clang::TemplateSpecializationType &templSpect =
       static_cast<const clang::TemplateSpecializationType &>(the_type);
 
-    if (get_type(templSpect.desugar(), new_type))
+    if (get_type(templSpect.desugar(), new_type, complete))
       return true;
     break;
   }
@@ -250,11 +253,11 @@ bool clang_cpp_convertert::get_type(
       static_cast<const clang::MemberPointerType &>(the_type);
 
     typet sub_type;
-    if (get_type(mpt.getPointeeType(), sub_type))
+    if (get_type(mpt.getPointeeType(), sub_type, false))
       return true;
 
     typet class_type;
-    if (get_type(*mpt.getClass(), class_type))
+    if (get_type(*mpt.getClass(), class_type, complete))
       return true;
 
     new_type = gen_pointer_type(sub_type);
@@ -268,7 +271,7 @@ bool clang_cpp_convertert::get_type(
       static_cast<const clang::RValueReferenceType &>(the_type);
 
     typet sub_type;
-    if (get_type(rvrt.getPointeeType(), sub_type))
+    if (get_type(rvrt.getPointeeType(), sub_type, false))
       return true;
 
     // This is done similarly to lvalue reference.
@@ -288,7 +291,7 @@ bool clang_cpp_convertert::get_type(
   }
 
   default:
-    return clang_c_convertert::get_type(the_type, new_type);
+    return clang_c_convertert::get_type(the_type, new_type, complete);
   }
 
   return false;
@@ -329,13 +332,15 @@ bool clang_cpp_convertert::get_method(
   return false;
 }
 
-bool clang_cpp_convertert::get_struct_union_class(const clang::RecordDecl &rd)
+bool clang_cpp_convertert::get_struct_union_class(
+  const clang::RecordDecl &rd,
+  bool complete)
 {
   // Only convert RecordDecl not depending on a template parameter
   if (rd.isDependentContext())
     return false;
 
-  return clang_c_convertert::get_struct_union_class(rd);
+  return clang_c_convertert::get_struct_union_class(rd, complete);
 }
 
 bool clang_cpp_convertert::get_struct_union_class_fields(
@@ -533,7 +538,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     if (cast.isAlwaysNull())
     {
       typet t;
-      if (get_type(cast.getType(), t))
+      if (get_type(cast.getType(), t, true))
         return true;
 
       new_expr = gen_zero(gen_pointer_type(t));
@@ -568,7 +573,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       return true;
 
     typet type;
-    if (get_type(member_call.getType(), type))
+    if (get_type(member_call.getType(), type, true))
       return true;
 
     side_effect_expr_function_callt call;
@@ -609,7 +614,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
 
     typet type;
     clang::QualType qtype = operator_call.getCallReturnType(*ASTContext);
-    if (get_type(qtype, type))
+    if (get_type(qtype, type, true))
       return true;
 
     side_effect_expr_function_callt call;
@@ -694,7 +699,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     const clang::CXXNewExpr &ne = static_cast<const clang::CXXNewExpr &>(stmt);
 
     typet t;
-    if (get_type(ne.getType(), t))
+    if (get_type(ne.getType(), t, true))
       return true;
 
     if (ne.isArray())
@@ -746,7 +751,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     if (de.getDestroyedType()->getAsCXXRecordDecl())
     {
       typet destt;
-      if (get_type(de.getDestroyedType(), destt))
+      if (get_type(de.getDestroyedType(), destt, true))
         return true;
       new_expr.type() = destt;
     }
@@ -766,7 +771,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       static_cast<const clang::CXXScalarValueInitExpr &>(stmt);
 
     typet t;
-    if (get_type(cxxsvi.getType(), t))
+    if (get_type(cxxsvi.getType(), t, true))
       return true;
 
     new_expr = gen_zero(t);
@@ -802,7 +807,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     }
 
     typet this_type;
-    if (get_type(this_expr.getType(), this_type))
+    if (get_type(this_expr.getType(), this_type, true))
       return true;
 
     assert(this_type == it->second.second);
@@ -870,7 +875,7 @@ bool clang_cpp_convertert::get_constructor_call(
 
   // Get type
   typet type;
-  if (get_type(constructor_call.getType(), type))
+  if (get_type(constructor_call.getType(), type, true))
     return true;
 
   side_effect_expr_function_callt call;
@@ -1076,7 +1081,7 @@ bool clang_cpp_convertert::get_function_this_pointer_param(
 {
   // Parse this pointer
   code_typet::argumentt this_param;
-  if (get_type(cxxmd.getThisType(), this_param.type()))
+  if (get_type(cxxmd.getThisType(), this_param.type(), true))
     return true;
 
   locationt location_begin;
@@ -1212,32 +1217,32 @@ bool clang_cpp_convertert::get_template_decl_specialization(
   bool DumpExplicitInst,
   exprt &new_expr)
 {
-  for (auto const *redecl_with_bad_type : D->redecls())
-  {
-    auto *redecl = llvm::dyn_cast<SpecializationDecl>(redecl_with_bad_type);
-    if (!redecl)
-    {
-      assert(
-        llvm::isa<clang::CXXRecordDecl>(redecl_with_bad_type) &&
-        "expected an injected-class-name");
-      continue;
-    }
-
-    switch (redecl->getTemplateSpecializationKind())
-    {
-    case clang::TSK_ExplicitInstantiationDeclaration:
-    case clang::TSK_ExplicitInstantiationDefinition:
-    case clang::TSK_ExplicitSpecialization:
-      if (!DumpExplicitInst)
-        break;
-      // Fall through.
-    case clang::TSK_Undeclared:
-    case clang::TSK_ImplicitInstantiation:
-      if (get_decl(*redecl, new_expr))
-        return true;
-      break;
-    }
-  }
+//  for (auto const *redecl_with_bad_type : D->redecls())
+//  {
+//    auto *redecl = llvm::dyn_cast<SpecializationDecl>(redecl_with_bad_type);
+//    if (!redecl)
+//    {
+//      assert(
+//        llvm::isa<clang::CXXRecordDecl>(redecl_with_bad_type) &&
+//        "expected an injected-class-name");
+//      continue;
+//    }
+//
+//    switch (redecl->getTemplateSpecializationKind())
+//    {
+//    case clang::TSK_ExplicitInstantiationDeclaration:
+//    case clang::TSK_ExplicitInstantiationDefinition:
+//    case clang::TSK_ExplicitSpecialization:
+//      if (!DumpExplicitInst)
+//        break;
+//      // Fall through.
+//    case clang::TSK_Undeclared:
+//    case clang::TSK_ImplicitInstantiation:
+//      if (get_decl(*redecl, new_expr))
+//        return true;
+//      break;
+//    }
+//  }
 
   return false;
 }
@@ -1294,7 +1299,7 @@ bool clang_cpp_convertert::get_decl_ref(
 
     get_decl_name(fd, name, id);
 
-    if (get_type(fd.getType(), type))
+    if (get_type(fd.getType(), type, true))
       return true;
 
     code_typet &fd_type = to_code_type(type);
@@ -1557,7 +1562,7 @@ bool clang_cpp_convertert::get_base_map(
     const clang::CXXRecordDecl &base_cxxrd =
       *(base.getType().getTypePtr()->getAsCXXRecordDecl());
 
-    if (get_struct_union_class(base_cxxrd))
+    if (get_struct_union_class(base_cxxrd, true))
       return true;
 
     // recursively get more bases for this `base`
