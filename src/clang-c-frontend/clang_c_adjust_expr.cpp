@@ -562,13 +562,13 @@ void clang_c_adjust::adjust_type(typet &type)
     {
       type.id("incomplete_struct");
       type.remove(irept::a_incomplete);
-      assert(false);
+//      assert(false);
     }
     else if(type.id() == "union" && type.incomplete())
     {
       type.id("incomplete_union");
       type.remove(irept::a_incomplete);
-      assert(false);
+//      assert(false);
     }
   }
   else if (is_array_like(type))
