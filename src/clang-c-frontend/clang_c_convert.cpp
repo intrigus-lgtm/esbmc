@@ -9,6 +9,7 @@ CC_DIAGNOSTIC_IGNORE_LLVM_CHECKS()
 #include <clang/AST/QualTypeNames.h>
 #include <clang/AST/Type.h>
 #include <clang/Basic/Version.inc>
+#include <clang/Basic/Builtins.h>
 #include <clang/Index/USRGeneration.h>
 #include <clang/Frontend/ASTUnit.h>
 #include <llvm/Support/raw_os_ostream.h>
@@ -275,6 +276,17 @@ bool clang_c_convertert::get_decl(const clang::Decl &decl, exprt &new_expr)
   case clang::Decl::Typedef:
     break;
 
+  case clang::Decl::BuiltinTemplate:
+  {
+    // expanded by clang itself
+    const clang::BuiltinTemplateDecl &btd =
+      static_cast<const clang::BuiltinTemplateDecl &>(decl);
+    assert(
+      btd.getBuiltinTemplateKind() ==
+      clang::BuiltinTemplateKind::BTK__make_integer_seq);
+
+    break;
+  }
   default:
     std::ostringstream oss;
     llvm::raw_os_ostream ross(oss);
@@ -1128,11 +1140,11 @@ bool clang_c_convertert::get_type(
     if (get_type(lvrt.getPointeeType(), sub_type, false))
       return true;
 
-//    if (sub_type.is_struct() || sub_type.is_union())
-//    {
-//      struct_union_typet t = to_struct_union_type(sub_type);
-//      sub_type = symbol_typet(tag_prefix + t.tag().as_string());
-//    }
+    //    if (sub_type.is_struct() || sub_type.is_union())
+    //    {
+    //      struct_union_typet t = to_struct_union_type(sub_type);
+    //      sub_type = symbol_typet(tag_prefix + t.tag().as_string());
+    //    }
 
     /*
      * Note:
@@ -2512,8 +2524,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       std::ostringstream oss;
       llvm::raw_os_ostream ross(oss);
       ross << "ESBMC could not find the parent scope for "
-           << "the following return statement:"
-           << "\n";
+           << "the following return statement:" << "\n";
       ret.dump(ross, *ASTContext);
       ross.flush();
       log_error("{}", oss.str());
@@ -2609,8 +2620,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       std::ostringstream oss;
       llvm::raw_os_ostream ross(oss);
       ross << "Conversion of unsupported value computed by clang for expr: \"";
-      ross << stmt.getStmtClassName() << "\" to expression"
-           << "\n";
+      ross << stmt.getStmtClassName() << "\" to expression" << "\n";
       stmt.dump(ross, *ASTContext);
       ross.flush();
       log_error("{}", oss.str());
@@ -2649,8 +2659,7 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       std::ostringstream oss;
       llvm::raw_os_ostream ross(oss);
       ross << "Conversion of unsupported value-dependent type-trait expr: \"";
-      ross << stmt.getStmtClassName() << "\" to expression"
-           << "\n";
+      ross << stmt.getStmtClassName() << "\" to expression" << "\n";
       stmt.dump(ross, *ASTContext);
       ross.flush();
       log_error("{}", oss.str());
@@ -2671,13 +2680,52 @@ bool clang_c_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
     break;
   }
 
+  case clang::Expr::CXXTryStmtClass:
+  case clang::Expr::CXXThrowExprClass:
+  {
+    new_expr = code_skipt();
+    break;
+  }
+
+  case clang::Expr::ArrayInitLoopExprClass:
+  {
+    const clang::ArrayInitLoopExpr &arrayInitLoopExpr =
+      static_cast<const clang::ArrayInitLoopExpr &>(stmt);
+    arrayInitLoopExpr.getCommonExpr()->dump();
+    arrayInitLoopExpr.getSubExpr()->dump();
+    log_error("lol = {}", arrayInitLoopExpr.getArraySize().getZExtValue());
+
+    exprt source_array;
+    if (get_expr(*arrayInitLoopExpr.getCommonExpr(), source_array))
+      return true;
+    source_array.dump();
+    //
+    //    exprt element_initializer;
+    //    if (get_expr(*arrayInitLoopExpr.getSubExpr(), element_initializer))
+    //      return true;
+    //    element_initializer.dump();
+    source_array.type().dump();
+    source_array.type().subtype().dump();
+    new_expr = gen_zero(source_array.type());
+
+    //    new_expr = array_init_loop_expr;
+    break;
+  }
+
+  case clang::Stmt::ArrayInitIndexExprClass:
+  {
+    exprt array_init_index_expr;
+    array_init_index_expr.name("__ARRAY_INIT_INDEX_EXPR__");
+    new_expr = array_init_index_expr;
+    break;
+  }
+
   default:
   {
     std::ostringstream oss;
     llvm::raw_os_ostream ross(oss);
     ross << "Conversion of unsupported clang expr: \"";
-    ross << stmt.getStmtClassName() << "\" to expression"
-         << "\n";
+    ross << stmt.getStmtClassName() << "\" to expression" << "\n";
     stmt.dump(ross, *ASTContext);
     ross.flush();
     log_error("{}", oss.str());
@@ -2742,8 +2790,7 @@ bool clang_c_convertert::get_decl_ref(const clang::Decl &d, exprt &new_expr)
   std::ostringstream oss;
   llvm::raw_os_ostream ross(oss);
   ross << "Conversion of unsupported clang decl ref: \"";
-  ross << d.getDeclKindName() << "\" to expression"
-       << "\n";
+  ross << d.getDeclKindName() << "\" to expression" << "\n";
   d.dump(ross);
   ross.flush();
   log_error("{}", oss.str());
@@ -2823,8 +2870,7 @@ bool clang_c_convertert::get_cast_expr(
     std::ostringstream oss;
     llvm::raw_os_ostream ross(oss);
     ross << "Conversion of unsupported clang cast operator: \"";
-    ross << cast.getCastKindName() << "\" to expression"
-         << "\n";
+    ross << cast.getCastKindName() << "\" to expression" << "\n";
     cast.dump(ross, *ASTContext);
     ross.flush();
     log_error("{}", oss.str());
@@ -2900,8 +2946,7 @@ bool clang_c_convertert::get_unary_operator_expr(
     llvm::raw_os_ostream ross(oss);
     ross << "Conversion of unsupported clang unary operator: \"";
     ross << clang::UnaryOperator::getOpcodeStr(uniop.getOpcode()).str()
-         << "\" to expression"
-         << "\n";
+         << "\" to expression" << "\n";
     uniop.dump(ross, *ASTContext);
     ross.flush();
     log_error("{}", oss.str());
@@ -3090,8 +3135,7 @@ bool clang_c_convertert::get_compound_assign_expr(
     std::ostringstream oss;
     llvm::raw_os_ostream ross(oss);
     ross << "Conversion of unsupported clang binary operator: \"";
-    ross << compop.getOpcodeStr().str() << "\" to expression"
-         << "\n";
+    ross << compop.getOpcodeStr().str() << "\" to expression" << "\n";
     compop.dump(ross, *ASTContext);
     ross.flush();
     log_error("{}", oss.str());

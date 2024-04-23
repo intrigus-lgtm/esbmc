@@ -837,8 +837,7 @@ bool clang_cpp_convertert::get_expr(const clang::Stmt &stmt, exprt &new_expr)
       std::ostringstream oss;
       llvm::raw_os_ostream ross(oss);
       ross << "Conversion of unsupported value-dependent size-of-pack expr: \"";
-      ross << stmt.getStmtClassName() << "\" to expression"
-           << "\n";
+      ross << stmt.getStmtClassName() << "\" to expression" << "\n";
       stmt.dump(ross, *ASTContext);
       ross.flush();
       log_error("{}", oss.str());
@@ -972,6 +971,45 @@ void clang_cpp_convertert::build_member_from_component(
   component.swap(member);
 }
 
+bool dag_match_replace_helper(
+  exprt &to_search,
+  exprt &replacement,
+  const std::function<bool(exprt &)> &is_match)
+{
+  if (is_match(to_search))
+  {
+    to_search = replacement;
+    return true;
+  }
+  else
+  {
+    for (auto &op : to_search.operands())
+    {
+      if (dag_match_replace_helper(op, replacement, is_match))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Assumes that pattern and to_search are both DAGs.
+// Expects that there is no more than one match.
+// Returns true if a match was found and replaced.
+bool dag_match_replace_one(
+  exprt &to_search,
+  exprt &replacement,
+  const std::function<bool(exprt &)> &is_match)
+{
+  bool result = dag_match_replace_helper(to_search, replacement, is_match);
+  if (result)
+  {
+    assert(!dag_match_replace_helper(to_search, replacement, is_match));
+  }
+  return result;
+}
+
 bool clang_cpp_convertert::get_function_body(
   const clang::FunctionDecl &fd,
   exprt &new_expr,
@@ -1016,21 +1054,126 @@ bool clang_cpp_convertert::get_function_body(
         {
           if (init->isMemberInitializer())
           {
-            exprt lhs;
-            // parsing non-static member initializer
-            if (get_decl_ref(*init->getMember(), lhs))
-              return true;
+            if (
+              init->getInit()->getStmtClass() ==
+              clang::Stmt::ArrayInitLoopExprClass)
+            {
+              clang::ArrayInitLoopExpr *array_init =
+                static_cast<clang::ArrayInitLoopExpr *>(init->getInit());
+              exprt source_array_expr;
+              if (get_expr(*array_init->getCommonExpr(), source_array_expr))
+                return true;
 
-            build_member_from_component(
-              fd, lhs.id() == "dereference" ? lhs.op0() : lhs);
+              typet array_element_type = source_array_expr.type().subtype();
+              typet array_element_ptr_type = pointer_typet(array_element_type);
 
-            exprt rhs;
-            rhs.set("#member_init", 1);
-            if (get_expr(*init->getInit(), rhs))
-              return true;
+              symbolt source_array_symbol;
+              get_default_symbol(
+                source_array_symbol,
+                get_modulename_from_path(
+                  source_array_expr.location().file().as_string()),
+                array_element_ptr_type,
+                std::string("tmp$11"),
+                std::string("tmp"),
+                source_array_expr.location());
+              context.add(source_array_symbol);
+              source_array_symbol.lvalue = true;
+              source_array_symbol.value = source_array_expr;
 
-            initializer = side_effect_exprt("assign", lhs.type());
-            initializer.copy_to_operands(lhs, rhs);
+              exprt source_array_expr_evaluated =
+                symbol_expr(source_array_symbol);
+
+              // Generate `source_array_expr_evaluated = source_array_expr;`
+              side_effect_exprt evaluate_source_array_stmt("assign");
+              // Cast from e.g. int[3] to int *
+              exprt source_array_typecasted = source_array_expr;
+              gen_typecast(ns, source_array_typecasted, array_element_ptr_type);
+              evaluate_source_array_stmt.type() = array_element_ptr_type;
+              evaluate_source_array_stmt.copy_to_operands(
+                source_array_expr_evaluated, source_array_typecasted);
+
+              code_blockt array_init_body = code_blockt();
+              convert_expression_to_code(evaluate_source_array_stmt);
+              array_init_body.operands().push_back(evaluate_source_array_stmt);
+
+              exprt per_element_initializer;
+              if (get_expr(*array_init->getSubExpr(), per_element_initializer))
+                return true;
+
+              // Replace reference to `source_array_expr` with `source_array_expr_evaluated` such that
+              // it is only evaluated once as per the clang docs.
+              if (!dag_match_replace_one(
+                    per_element_initializer,
+                    source_array_expr_evaluated,
+                    [&](exprt &other) { return other == source_array_expr; }))
+              {
+                log_error(
+                  "Failed to match expected pattern in {} {}",
+                  __func__,
+                  __LINE__);
+                return true;
+              }
+
+              for (int64_t i = 0; i < array_init->getArraySize().getSExtValue();
+                   i++)
+              {
+                exprt lhs;
+                // parsing non-static member initializer
+                if (get_decl_ref(*init->getMember(), lhs))
+                  return true;
+
+                build_member_from_component(
+                  fd, lhs.id() == "dereference" ? lhs.op0() : lhs);
+                assert(lhs.type().is_array());
+
+                exprt rhs;
+                rhs.set("#member_init", 1);
+                rhs = per_element_initializer;
+
+                exprt pos = constant_exprt(i, index_type());
+
+                if (!dag_match_replace_one(
+                      rhs,
+                      pos,
+                      [&](exprt &other) {
+                        return other.name().operator==(
+                          "__ARRAY_INIT_INDEX_EXPR__");
+                      }))
+                {
+                  log_error(
+                    "Failed to match expected pattern in {} {}",
+                    __func__,
+                    __LINE__);
+                  return true;
+                }
+
+                lhs = index_exprt(lhs, pos, array_element_type);
+
+                initializer = side_effect_exprt("assign", lhs.type());
+                initializer.copy_to_operands(lhs, rhs);
+                convert_expression_to_code(initializer);
+                array_init_body.operands().push_back(initializer);
+              }
+              initializer = array_init_body;
+            }
+            else
+            {
+              exprt lhs;
+              // parsing non-static member initializer
+              if (get_decl_ref(*init->getMember(), lhs))
+                return true;
+
+              build_member_from_component(
+                fd, lhs.id() == "dereference" ? lhs.op0() : lhs);
+
+              exprt rhs;
+              rhs.set("#member_init", 1);
+              if (get_expr(*init->getInit(), rhs))
+                return true;
+
+              initializer = side_effect_exprt("assign", lhs.type());
+              initializer.copy_to_operands(lhs, rhs);
+            }
           }
           else if (init->isDelegatingInitializer())
           {
@@ -1217,32 +1360,32 @@ bool clang_cpp_convertert::get_template_decl_specialization(
   bool DumpExplicitInst,
   exprt &new_expr)
 {
-//  for (auto const *redecl_with_bad_type : D->redecls())
-//  {
-//    auto *redecl = llvm::dyn_cast<SpecializationDecl>(redecl_with_bad_type);
-//    if (!redecl)
-//    {
-//      assert(
-//        llvm::isa<clang::CXXRecordDecl>(redecl_with_bad_type) &&
-//        "expected an injected-class-name");
-//      continue;
-//    }
-//
-//    switch (redecl->getTemplateSpecializationKind())
-//    {
-//    case clang::TSK_ExplicitInstantiationDeclaration:
-//    case clang::TSK_ExplicitInstantiationDefinition:
-//    case clang::TSK_ExplicitSpecialization:
-//      if (!DumpExplicitInst)
-//        break;
-//      // Fall through.
-//    case clang::TSK_Undeclared:
-//    case clang::TSK_ImplicitInstantiation:
-//      if (get_decl(*redecl, new_expr))
-//        return true;
-//      break;
-//    }
-//  }
+  //  for (auto const *redecl_with_bad_type : D->redecls())
+  //  {
+  //    auto *redecl = llvm::dyn_cast<SpecializationDecl>(redecl_with_bad_type);
+  //    if (!redecl)
+  //    {
+  //      assert(
+  //        llvm::isa<clang::CXXRecordDecl>(redecl_with_bad_type) &&
+  //        "expected an injected-class-name");
+  //      continue;
+  //    }
+  //
+  //    switch (redecl->getTemplateSpecializationKind())
+  //    {
+  //    case clang::TSK_ExplicitInstantiationDeclaration:
+  //    case clang::TSK_ExplicitInstantiationDefinition:
+  //    case clang::TSK_ExplicitSpecialization:
+  //      if (!DumpExplicitInst)
+  //        break;
+  //      // Fall through.
+  //    case clang::TSK_Undeclared:
+  //    case clang::TSK_ImplicitInstantiation:
+  //      if (get_decl(*redecl, new_expr))
+  //        return true;
+  //      break;
+  //    }
+  //  }
 
   return false;
 }
