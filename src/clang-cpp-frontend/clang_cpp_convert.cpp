@@ -152,6 +152,47 @@ bool clang_cpp_convertert::get_decl(const clang::Decl &decl, exprt &new_expr)
   case clang::Decl::TypeAliasTemplate:
     break;
 
+  case clang::Decl::Decomposition:
+  {
+    const clang::DecompositionDecl &dd =
+      static_cast<const clang::DecompositionDecl &>(decl);
+
+    exprt init;
+    if (get_expr(*dd.getInit(), init))
+      return true;
+
+    typet t;
+    if (get_type(dd.getType(), t))
+      return true;
+    // Get id and name
+    std::string id, name;
+    get_decl_name(dd, name, id);
+
+    locationt location_begin;
+    get_location_from_decl(dd, location_begin);
+
+    symbolt symbol;
+    get_default_symbol(
+      symbol,
+      get_modulename_from_path(location_begin.file().as_string()),
+      t,
+      name,
+      id,
+      location_begin);
+
+    symbol.lvalue = true;
+    symbol.static_lifetime = false;
+    symbol.is_extern = false;
+    symbol.file_local = true;
+
+    symbolt *added_symbol = context.move_symbol_to_context(symbol);
+    code_declt decl(symbol_expr(*added_symbol));
+    decl.location() = location_begin;
+    decl.operands().push_back(init);
+
+    new_expr = decl;
+    break;
+  }
   default:
     return clang_c_convertert::get_decl(decl, new_expr);
   }
@@ -189,6 +230,23 @@ void clang_cpp_convertert::get_decl_name(
       break;
     }
     break;
+
+  case clang::Decl::Decomposition:
+  {
+    const clang::DecompositionDecl &dd =
+      static_cast<const clang::DecompositionDecl &>(nd);
+    locationt location_begin;
+    get_location_from_decl(dd, location_begin);
+    std::string location_begin_str = location_begin.file().as_string() + "_" +
+                                     location_begin.function().as_string() +
+                                     "_" + location_begin.line().as_string() +
+                                     "_" + location_begin.column().as_string();
+    name = "__anon_decomposition_at_" + location_begin_str;
+    std::replace(name.begin(), name.end(), '.', '_');
+    id = name;
+
+    return;
+  }
 
   default:
     clang_c_convertert::get_decl_name(nd, name, id);
@@ -1374,6 +1432,16 @@ bool clang_cpp_convertert::get_decl_ref(
     new_expr.identifier(id);
     new_expr.cmt_lvalue(true);
     new_expr.name(name);
+
+    break;
+  }
+  case clang::Decl::Binding:
+  {
+    const clang::BindingDecl &bd =
+      static_cast<const clang::BindingDecl &>(decl);
+
+    if (get_expr(*bd.getBinding(), new_expr))
+      return true;
 
     break;
   }
