@@ -1146,6 +1146,17 @@ bool clang_cpp_convertert::get_function_body(
             if (get_expr(*init->getInit(), rhs))
               return true;
 
+            // check whether the member is a reference after ignoring dereference
+            bool is_reference = lhs.id() == "dereference" && lhs.op0().type().reference();
+            if (is_reference)
+            {
+
+              typet ref_type = lhs.op0().type();
+              gen_typecast(ns, rhs, ref_type);
+              lhs = lhs.op0();
+              lhs.type().set("#reference", false);
+            }
+
             initializer = side_effect_exprt("assign", lhs.type());
             initializer.copy_to_operands(lhs, rhs);
           }
