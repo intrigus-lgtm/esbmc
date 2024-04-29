@@ -4,6 +4,7 @@
 #include <util/c_types.h>
 #include <util/destructor.h>
 #include <util/expr_util.h>
+#include <cassert>
 
 clang_cpp_adjust::clang_cpp_adjust(contextt &_context)
   : clang_c_adjust(_context)
@@ -190,7 +191,7 @@ void clang_cpp_adjust::adjust_side_effect_assign(side_effect_exprt &expr)
     // turn assign expression r = 1, where r is an lvalue reference
     // into *r = 1
     convert_ref_to_deref_symbol(lhs);
-    // Is this dead code?
+    assert(false);
   }
   else if (lhs.id() == "sideeffect" && lhs.statement() == "function_call")
   {
