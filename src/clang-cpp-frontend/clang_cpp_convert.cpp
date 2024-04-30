@@ -29,7 +29,7 @@ clang_cpp_convertert::clang_cpp_convertert(
   contextt &_context,
   std::vector<std::unique_ptr<clang::ASTUnit>> &_ASTs,
   irep_idt _mode)
-  : clang_c_convertert(_context, _ASTs, _mode)
+  : clang_c_convertert(_context, _ASTs, _mode), tmp_symbol("cpp_convert")
 {
 }
 
@@ -245,6 +245,14 @@ void clang_cpp_convertert::get_decl_name(
     std::replace(name.begin(), name.end(), '.', '_');
     id = name;
 
+    return;
+  }
+  case clang::Decl::ParmVar:
+  {
+    const clang::ParmVarDecl &pvd = static_cast<const clang::ParmVarDecl &>(nd);
+    // Add the parameter index to the name and id to avoid name clashes
+    name += "@" + std::to_string(pvd.getFunctionScopeIndex());
+    id += "@" + std::to_string(pvd.getFunctionScopeIndex());
     return;
   }
 
@@ -1335,8 +1343,25 @@ void clang_cpp_convertert::name_param_and_continue(
       param.cmt_base_name(name);
       param.identifier(id);
       param.name(name);
+      assert(false);
     }
   }
+
+
+//  const clang::DeclContext *dcxt = pd.getParentFunctionOrMethod();
+//  if (const auto *md = llvm::dyn_cast<clang::CXXMethodDecl>(dcxt))
+//  {
+//    get_decl_name(*md, name, id);
+//          // name would be just `ref` and id would be "<cpyctor_id>::ref"
+//    std::string unique_suffix = std::to_string(++tmp_symbol.counter);
+//          name = name + unique_suffix;
+//          id = id + unique_suffix;
+//
+//          // sync param name
+////          param.cmt_base_name(name);
+//          param.identifier(id);
+//          param.name(name);
+//  }
 }
 
 template <typename SpecializationDecl>

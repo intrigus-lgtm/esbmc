@@ -20,6 +20,7 @@ protected:
   typedef std::unordered_map<std::size_t, std::pair<std::string, typet>>
     this_mapt;
   this_mapt this_map;
+  symbol_generator tmp_symbol;
 
   bool get_decl(const clang::Decl &decl, exprt &new_expr) override;
 
